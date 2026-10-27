@@ -1,0 +1,13 @@
+# Gradle / Android Studio
+.gradle/
+build/
+**/build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Локальное окружение сборки (JDK, Android SDK, venv) — не часть проекта
+/work/
