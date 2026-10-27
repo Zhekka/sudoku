@@ -73,7 +73,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
         }
     }
 
-    SudokuTheme {
+    SudokuTheme(darkTheme = vm.isDark) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
@@ -85,6 +85,8 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                     onManual = vm::openManual,
                     onHistory = vm::openHistory,
                     historyCount = vm.history.size,
+                    isDark = vm.isDark,
+                    onToggleTheme = vm::toggleTheme,
                     notice = if (cameraDenied) {
                         "Доступ к камере не выдан — можно выбрать изображение из галереи"
                     } else {

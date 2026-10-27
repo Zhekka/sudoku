@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Проверка пайплайна распознавания: зеркало алгоритма из GridExtractor.kt.
 
-Рисует синтетическое судоку, прогоняет тот же маршрут, что и в приложении:
-    размытие 7x7 -> Оцу -> связные компоненты -> углы -> уточнение прямых
+Рисует синтетическое судоку и прогоняет тот же маршрут, что и в приложении:
+    гауссово размытие 7x7 -> порог Оцу -> связные компоненты
+    -> внешний контур (алгоритм Мура) -> approxPolyDP(0.04·периметра)
+    -> выпуклый четырёхугольник с макс. периметром -> сортировка углов
     -> гомографика -> выравнивание 306x306 -> бинаризация Оцу
     -> 81 клетка 28x28 -> эвристика пустоты -> TFLite.
 Сверяет найденную сетку и распознанные цифры с исходной задачей.
@@ -24,6 +26,11 @@ CELL = 34
 GRID = CELL * 9
 SIZE = 720           # размер «фото»
 MARGIN = 60          # поле вокруг сетки
+
+# Направления обхода по часовой стрелке (ось Y направлена вниз)
+DIR_X = [1, 1, 0, -1, -1, -1, 0, 1]
+DIR_Y = [0, 1, 1, 1, 0, -1, -1, -1]
+DIRS = {(1, 0): 0, (1, 1): 1, (0, 1): 2, (-1, 1): 3, (-1, 0): 4, (-1, -1): 5, (0, -1): 6, (1, -1): 7}
 
 PUZZLE = [
     [5, 3, 0, 0, 7, 0, 0, 0, 0],
@@ -108,102 +115,170 @@ def otsu(values: np.ndarray) -> float:
     return float(best)
 
 
-def detect_quad(gray: np.ndarray):
-    """Связные компоненты + экстремальные углы + уточнение прямых (PCA)."""
-    h, w = gray.shape
-    threshold = otsu(gray)
-    ink = gray <= threshold
-
+def label_components(ink: np.ndarray):
+    """Разметка связных компонент 4-связности + [x0, y0, x1, y1] каждой."""
+    h, w = ink.shape
     labels = np.zeros((h, w), dtype=np.int32)
-    best_id, best_score, best_box = 0, 0.0, None
+    stats = []
     comp_id = 0
     ys, xs = np.nonzero(ink)
-    for sy, sx in zip(ys, xs):
-        if labels[sy, sx]:
+    for py, px in zip(ys, xs):
+        if labels[py, px]:
             continue
         comp_id += 1
-        stack = [(sy, sx)]
-        labels[sy, sx] = comp_id
-        count = 0
-        y0 = x0 = 10**9
-        y1 = x1 = -1
+        stack = [(py, px)]
+        labels[py, px] = comp_id
+        x0 = x1 = px
+        y0 = y1 = py
         while stack:
             y, x = stack.pop()
-            count += 1
             x0, x1 = min(x0, x), max(x1, x)
             y0, y1 = min(y0, y), max(y1, y)
             for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
                 if 0 <= ny < h and 0 <= nx < w and ink[ny, nx] and not labels[ny, nx]:
                     labels[ny, nx] = comp_id
                     stack.append((ny, nx))
-        bw, bh = x1 - x0 + 1, y1 - y0 + 1
-        if bw < 0.30 * w or bh < 0.30 * h:
+        stats.append((x0, y0, x1, y1))
+    return labels, stats
+
+
+def trace_contour(labels, comp_id, w, h, start_x, start_y):
+    """Внешний контур компоненты — алгоритм Мура (как findContours(RETR_EXTERNAL))."""
+    sx = sy = None
+    for y in range(start_y, h):
+        for x in range(start_x, w):
+            if labels[y, x] == comp_id:
+                sx, sy = x, y
+                break
+        if sx is not None:
+            break
+    if sx is None:
+        return []
+
+    contour = []
+    cx, cy = sx, sy
+    bx, by = sx - 1, sy
+    steps = 0
+    limit = w * h // 2 + 16
+    while steps < limit:
+        contour.append((cx, cy))
+        back = DIRS.get((bx - cx, by - cy), -1)
+        if back < 0:
+            break
+        found, last_bg = -1, back
+        for i in range(1, 9):
+            d = (back + i) % 8
+            nx, ny = cx + DIR_X[d], cy + DIR_Y[d]
+            if 0 <= nx < w and 0 <= ny < h and labels[ny, nx] == comp_id:
+                found = d
+                break
+            last_bg = d
+        if found < 0:
+            break
+        bx, by = cx + DIR_X[last_bg], cy + DIR_Y[last_bg]
+        cx += DIR_X[found]
+        cy += DIR_Y[found]
+        steps += 1
+        if (cx, cy) == (sx, sy):
+            break
+    return contour
+
+
+def closed_perimeter(points):
+    total = 0.0
+    for i, a in enumerate(points):
+        b = points[(i + 1) % len(points)]
+        total += float(np.hypot(b[0] - a[0], b[1] - a[1]))
+    return total
+
+
+def approx_poly_dp(points, epsilon):
+    """Douglas–Peucker для замкнутого контура (аналог approxPolyDP(closed=True))."""
+    if len(points) < 4:
+        return list(points)
+    closed = list(points) + [points[0]]
+    keep = [False] * len(closed)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(closed) - 1)]
+    while stack:
+        first, last = stack.pop()
+        if last <= first + 1:
             continue
-        aspect = bw / bh
-        if not (0.45 <= aspect <= 2.2):
+        ax, ay = closed[first]
+        bx, by = closed[last]
+        dx, dy = bx - ax, by - ay
+        length = float(np.hypot(dx, dy))
+        max_dist, max_idx = -1.0, -1
+        for i in range(first + 1, last):
+            px, py = closed[i]
+            if length < 1e-9:
+                dist = float(np.hypot(px - ax, py - ay))
+            else:
+                dist = abs((px - ax) * dy - (py - ay) * dx) / length
+            if dist > max_dist:
+                max_dist, max_idx = dist, i
+        if max_dist > epsilon and max_idx > 0:
+            keep[max_idx] = True
+            stack.append((first, max_idx))
+            stack.append((max_idx, last))
+    return [p for i, p in enumerate(closed[:-1]) if keep[i]]
+
+
+def is_convex(points):
+    sign = 0
+    n = len(points)
+    for i in range(n):
+        a, b, c = points[i], points[(i + 1) % n], points[(i + 2) % n]
+        cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+        if cross == 0:
             continue
-        score = count * min(1.0, aspect)
-        if score > best_score:
-            best_score, best_id, best_box = score, comp_id, (x0, y0, x1, y1)
-
-    if best_id == 0:
-        raise RuntimeError("сетка не найдена")
-
-    py, px = np.nonzero(labels == best_id)
-    s = px + py
-    d = px - py
-    pts = [
-        (px[np.argmin(s)], py[np.argmin(s)]),   # tl
-        (px[np.argmax(d)], py[np.argmax(d)]),   # tr
-        (px[np.argmax(s)], py[np.argmax(s)]),   # br
-        (px[np.argmin(d)], py[np.argmin(d)]),   # bl
-    ]
-    quad = np.array(pts, dtype=np.float64)
-
-    # уточнение: PCA-прямая по пикселям вблизи ребра, затем пересечение
-    diag = float(np.hypot(w, h))
-    for _ in range(2):
-        lines = []
-        for i in range(4):
-            a, b = quad[i], quad[(i + 1) % 4]
-            direction = b - a
-            length = np.hypot(*direction)
-            if length < 1:
-                return None
-            normal = np.array([-direction[1], direction[0]]) / length
-            band = diag * 0.035
-            dist = np.abs((px - a[0]) * normal[0] + (py - a[1]) * normal[1])
-            sel = dist <= band
-            if sel.sum() < 20:
-                return None
-            pts_x, pts_y = px[sel].astype(np.float64), py[sel].astype(np.float64)
-            mx, my = pts_x.mean(), pts_y.mean()
-            ex, ey = pts_x - mx, pts_y - my
-            sxx, syy, sxy = (ex * ex).sum(), (ey * ey).sum(), (ex * ey).sum()
-            theta = 0.5 * np.arctan2(2 * sxy, sxx - syy)
-            lines.append((np.array([-np.sin(theta), np.cos(theta)]), (mx, my)))
-        nxt = []
-        for i in range(4):
-            (n1, p1), (n2, p2) = lines[(i - 1) % 4], lines[i]
-            det = n1[0] * n2[1] - n1[1] * n2[0]
-            if abs(det) < 1e-9:
-                return None
-            r1, r2 = n1 @ p1, n2 @ p2
-            nxt.append(
-                [(r1 * n2[1] - r2 * n1[1]) / det, (n1[0] * r2 - n2[0] * r1) / det]
-            )
-        nxt = np.array(nxt)
-        rough = _area(quad)
-        if rough <= 0 or not (0.65 <= _area(nxt) / rough <= 1.55):
-            return None
-        quad = nxt
-    return quad
+        current = 1 if cross > 0 else -1
+        if sign == 0:
+            sign = current
+        elif sign != current:
+            return False
+    return sign != 0
 
 
-def _area(q):
-    p = np.array(q, dtype=np.float64)
-    x, y = p[:, 0], p[:, 1]
-    return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+def sort_corners(points):
+    """tl — min(x+y), br — max(x+y), tr — max(x−y), bl — min(x−y)."""
+    tl = min(range(len(points)), key=lambda i: points[i][0] + points[i][1])
+    br = max(range(len(points)), key=lambda i: points[i][0] + points[i][1])
+    tr = max(range(len(points)), key=lambda i: points[i][0] - points[i][1])
+    bl = min(range(len(points)), key=lambda i: points[i][0] - points[i][1])
+    if len({tl, br, tr, bl}) != 4:
+        return None
+    return [points[tl], points[tr], points[br], points[bl]]
+
+
+def detect_quad(gray: np.ndarray):
+    """Граница картинки по схеме из ноутбука: контур -> approxPolyDP -> выпуклый 4-угольник."""
+    h, w = gray.shape
+    threshold = otsu(gray)
+    labels, stats = label_components(gray <= threshold)
+
+    min_span = int(min(w, h) * 0.2)
+    best_quad, best_perim = None, 0.0
+    for idx, (x0, y0, x1, y1) in enumerate(stats):
+        if x1 - x0 + 1 < min_span or y1 - y0 + 1 < min_span:
+            continue
+        # компонент, закрывающий весь кадр, — фон фото, а не судоку
+        if x0 == 0 and y0 == 0 and x1 == w - 1 and y1 == h - 1:
+            continue
+        contour = trace_contour(labels, idx + 1, w, h, x0, y0)
+        if len(contour) < 8:
+            continue
+        perim = closed_perimeter(contour)
+        if perim <= best_perim:
+            continue
+        approx = approx_poly_dp(contour, 0.04 * perim)
+        if len(approx) != 4 or not is_convex(approx):
+            continue
+        quad = sort_corners(approx)
+        if quad is None:
+            continue
+        best_perim, best_quad = perim, quad
+    return best_quad
 
 
 def solve_homography(dst, src):
@@ -268,7 +343,7 @@ def main() -> int:
 
     quad = detect_quad(blurred)
     if quad is None:
-        print("УТОЧНЕНИЕ УГЛОВ НЕ СРАБОТАЛО", file=sys.stderr)
+        print("КОНТУР СЕТКИ НЕ НАЙДЕН", file=sys.stderr)
         return 1
 
     expected_corners = np.array(
@@ -280,6 +355,7 @@ def main() -> int:
         ],
         dtype=np.float64,
     )
+    quad = np.array(quad, dtype=np.float64)
     error = np.abs(quad - expected_corners).max()
     print(f"найденные углы:\n{quad.round(1)}")
     print(f"макс. отклонение от истинных углов: {error:.1f} px")

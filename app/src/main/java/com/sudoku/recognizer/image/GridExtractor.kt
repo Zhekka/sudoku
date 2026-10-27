@@ -87,6 +87,7 @@ object GridExtractor {
 
         val labels = IntArray(w * h)
         val stack = IntArray(w * h)
+        val stats = ArrayList<IntArray>(256) // [x0, y0, x1, y1] каждого компонента
 
         var bestId = 0
         var bestScore = 0.0
@@ -140,10 +141,18 @@ object GridExtractor {
                         bestId = id
                     }
                 }
+
+                stats.add(intArrayOf(x0, y0, x1, y1))
             }
             index++
         }
 
+        // Граница картинки — как в проекте (проект.ipynb): внешний контур области
+        // → approxPolyDP(0.04·периметра) → выпуклый четырёхугольник с макс. периметром.
+        findContourQuad(labels, stats, w, h)?.let { return clampQuad(it, w, h) }
+
+        // Запасной вариант, если контур не свёлся к четырём вершинам:
+        // углы по экстремумам диагоналей + уточнение прямых по пикселям.
         if (bestId == 0) return fallbackQuad(bitmap)
 
         val bestPixels = collectPixels(labels, bestId, w * h)
@@ -163,6 +172,230 @@ object GridExtractor {
         var k = 0
         for (i in 0 until size) if (labels[i] == label) out[k++] = i
         return out
+    }
+
+    // Направления обхода по часовой стрелке (ось Y направлена вниз): E, SE, S, SW, W, NW, N, NE
+    private val DIR_X = intArrayOf(1, 1, 0, -1, -1, -1, 0, 1)
+    private val DIR_Y = intArrayOf(0, 1, 1, 1, 0, -1, -1, -1)
+
+    /**
+     * Поиск границы картинки по схеме из ноутбука:
+     * внешний контур компоненты (аналог cv2.findContours(RETR_EXTERNAL))
+     * → упрощение cv2.approxPolyDP(cnt, 0.04·perimeter, True)
+     * → проверка выпуклости → четырёхугольник с наибольшим периметром
+     * → сортировка углов (min/max сумм и разностей), как в find_and_warp_sudoku.
+     */
+    private fun findContourQuad(
+        labels: IntArray,
+        stats: List<IntArray>,
+        width: Int,
+        height: Int,
+    ): Quad? {
+        val minSpan = (minOf(width, height) * 0.2f).toInt()
+        var bestQuad: Quad? = null
+        var bestPerimeter = 0.0
+
+        for (i in stats.indices) {
+            val boxWidth = stats[i][2] - stats[i][0] + 1
+            val boxHeight = stats[i][3] - stats[i][1] + 1
+            if (boxWidth < minSpan || boxHeight < minSpan) continue
+            // Компонент, закрывающий весь кадр, — это фон фото, а не судоку.
+            if (stats[i][0] == 0 && stats[i][1] == 0 &&
+                stats[i][2] == width - 1 && stats[i][3] == height - 1
+            ) continue
+
+            val contour = traceContour(labels, i + 1, width, height, stats[i][0], stats[i][1])
+            if (contour.size < 8) continue
+            val perimeter = closedPerimeter(contour)
+            if (perimeter <= bestPerimeter) continue
+            val approx = approxPolyDP(contour, 0.04 * perimeter)
+            if (approx.size != 4) continue
+            if (!isConvex(approx)) continue
+            val quad = sortCorners(approx) ?: continue
+
+            bestPerimeter = perimeter
+            bestQuad = quad
+        }
+        return bestQuad
+    }
+
+    /**
+     * Внешний контур компоненты — алгоритм Мура: от верхнего левого пикселя
+     * обход по часовой стрелке, пока не вернёмся в начало. Стартовый «фоновый»
+     * сосед — пиксель западнее (вне компоненты).
+     */
+    private fun traceContour(
+        labels: IntArray,
+        id: Int,
+        width: Int,
+        height: Int,
+        startX: Int,
+        startY: Int,
+    ): List<IntArray> {
+        var sx = -1
+        var sy = -1
+        scan@ for (y in startY until height) {
+            for (x in startX until width) {
+                if (labels[y * width + x] == id) {
+                    sx = x
+                    sy = y
+                    break@scan
+                }
+            }
+        }
+        if (sx < 0) return emptyList()
+
+        val contour = ArrayList<IntArray>(512)
+        var cx = sx
+        var cy = sy
+        var backX = sx - 1
+        var backY = sy
+        var steps = 0
+        val limit = width * height / 2 + 16
+
+        while (steps < limit) {
+            contour.add(intArrayOf(cx, cy))
+
+            val backDir = dirOf(backX - cx, backY - cy)
+            if (backDir < 0) break
+
+            var found = -1
+            var lastBackground = backDir
+            for (i in 1..8) {
+                val d = (backDir + i) % 8
+                val nx = cx + DIR_X[d]
+                val ny = cy + DIR_Y[d]
+                if (nx in 0 until width && ny in 0 until height && labels[ny * width + nx] == id) {
+                    found = d
+                    break
+                }
+                lastBackground = d
+            }
+            if (found < 0) break // одиночный пиксель
+
+            backX = cx + DIR_X[lastBackground]
+            backY = cy + DIR_Y[lastBackground]
+            cx += DIR_X[found]
+            cy += DIR_Y[found]
+            steps++
+            if (cx == sx && cy == sy) break // вернулись в начало
+        }
+        return contour
+    }
+
+    private fun dirOf(dx: Int, dy: Int): Int = when {
+        dx == 1 && dy == 0 -> 0
+        dx == 1 && dy == 1 -> 1
+        dx == 0 && dy == 1 -> 2
+        dx == -1 && dy == 1 -> 3
+        dx == -1 && dy == 0 -> 4
+        dx == -1 && dy == -1 -> 5
+        dx == 0 && dy == -1 -> 6
+        dx == 1 && dy == -1 -> 7
+        else -> -1
+    }
+
+    private fun closedPerimeter(points: List<IntArray>): Double {
+        var sum = 0.0
+        for (i in points.indices) {
+            val a = points[i]
+            val b = points[(i + 1) % points.size]
+            val dx = (b[0] - a[0]).toDouble()
+            val dy = (b[1] - a[1]).toDouble()
+            sum += sqrt(dx * dx + dy * dy)
+        }
+        return sum
+    }
+
+    /** Упрощение замкнутого контура (Douglas–Peucker), как approxPolyDP с closed=True. */
+    private fun approxPolyDP(points: List<IntArray>, epsilon: Double): List<IntArray> {
+        if (points.size < 4) return points
+        val closed = ArrayList<IntArray>(points.size + 1)
+        closed.addAll(points)
+        closed.add(points[0]) // замыкающий сегмент
+
+        val keep = BooleanArray(closed.size)
+        keep[0] = true
+        keep[closed.lastIndex] = true
+
+        val stack = ArrayDeque<IntArray>()
+        stack.addLast(intArrayOf(0, closed.lastIndex))
+        while (stack.isNotEmpty()) {
+            val segment = stack.removeLast()
+            val first = segment[0]
+            val last = segment[1]
+            if (last <= first + 1) continue
+
+            val ax = closed[first][0].toDouble()
+            val ay = closed[first][1].toDouble()
+            val dx = closed[last][0].toDouble() - ax
+            val dy = closed[last][1].toDouble() - ay
+            val length = sqrt(dx * dx + dy * dy)
+
+            var maxDistance = -1.0
+            var maxIndex = -1
+            for (i in first + 1 until last) {
+                val px = closed[i][0].toDouble()
+                val py = closed[i][1].toDouble()
+                val distance = if (length < 1e-9) {
+                    sqrt((px - ax) * (px - ax) + (py - ay) * (py - ay))
+                } else {
+                    abs((px - ax) * dy - (py - ay) * dx) / length
+                }
+                if (distance > maxDistance) {
+                    maxDistance = distance
+                    maxIndex = i
+                }
+            }
+            if (maxDistance > epsilon && maxIndex > 0) {
+                keep[maxIndex] = true
+                stack.addLast(intArrayOf(first, maxIndex))
+                stack.addLast(intArrayOf(maxIndex, last))
+            }
+        }
+
+        val out = ArrayList<IntArray>(8)
+        for (i in 0 until closed.lastIndex) if (keep[i]) out.add(closed[i])
+        return out
+    }
+
+    /** Аналог cv2.isContourConvex: все повороты одного знака. */
+    private fun isConvex(points: List<IntArray>): Boolean {
+        var sign = 0
+        for (i in points.indices) {
+            val a = points[i]
+            val b = points[(i + 1) % points.size]
+            val c = points[(i + 2) % points.size]
+            val cross = (b[0] - a[0]).toLong() * (c[1] - b[1]) -
+                (b[1] - a[1]).toLong() * (c[0] - b[0])
+            if (cross == 0L) continue
+            val current = if (cross > 0) 1 else -1
+            if (sign == 0) sign = current else if (sign != current) return false
+        }
+        return sign != 0
+    }
+
+    /** Сортировка углов: tl — min(x+y), br — max(x+y), tr — max(x−y), bl — min(x−y). */
+    private fun sortCorners(points: List<IntArray>): Quad? {
+        var tl = 0
+        var br = 0
+        var tr = 0
+        var bl = 0
+        var tlSum = Long.MAX_VALUE
+        var brSum = Long.MIN_VALUE
+        var trDiff = Long.MIN_VALUE
+        var blDiff = Long.MAX_VALUE
+        for (i in points.indices) {
+            val sum = points[i][0].toLong() + points[i][1]
+            val diff = points[i][0].toLong() - points[i][1]
+            if (sum < tlSum) { tlSum = sum; tl = i }
+            if (sum > brSum) { brSum = sum; br = i }
+            if (diff > trDiff) { trDiff = diff; tr = i }
+            if (diff < blDiff) { blDiff = diff; bl = i }
+        }
+        if (tl == br || tl == tr || tl == bl || tr == br || tr == bl || br == bl) return null
+        fun point(index: Int) = PointF(points[index][0].toFloat(), points[index][1].toFloat())
+        return Quad(point(tl), point(tr), point(br), point(bl))
     }
 
     /** Четыре экстремальных точки компоненты (диагонали квадрата). */

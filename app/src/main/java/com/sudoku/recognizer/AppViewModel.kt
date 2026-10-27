@@ -1,6 +1,8 @@
 package com.sudoku.recognizer
 
 import android.app.Application
+import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.PointF
@@ -92,8 +94,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     private val store = HistoryStore(application)
+    private val prefs = application.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private var recognizer: DigitRecognizer? = null
     private var sourceTag = "camera"
+
+    /** Выбранная тема: значение запоминается между запусками. */
+    var isDark by mutableStateOf(
+        if (prefs.contains(KEY_DARK)) {
+            prefs.getBoolean(KEY_DARK, false)
+        } else {
+            (application.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+        },
+    )
+        private set
 
     init {
         viewModelScope.launch(Dispatchers.IO) { history = store.load() }
@@ -159,6 +173,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Сообщение об ошибке из внешних компонентов (например, камеры). */
     fun showError(message: String) {
         hint = message
+    }
+
+    /** Переключение между светлой и тёмной темой. */
+    fun toggleTheme() {
+        isDark = !isDark
+        prefs.edit().putBoolean(KEY_DARK, isDark).apply()
     }
 
     private fun resetPuzzle() {
@@ -422,6 +442,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        private const val KEY_DARK = "dark_theme"
+
         /** Порог «цифра считана» — 0.5, как в ноутбуке. */
         private const val MIN_CONFIDENCE = 0.5f
 
