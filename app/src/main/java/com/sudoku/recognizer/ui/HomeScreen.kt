@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material3.Button
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.sp
 fun HomeScreen(
     onCamera: () -> Unit,
     onFile: () -> Unit,
+    onManual: () -> Unit,
     onHistory: () -> Unit,
     historyCount: Int,
     modifier: Modifier = Modifier,
@@ -97,6 +99,19 @@ fun HomeScreen(
             Icon(Icons.Outlined.Image, contentDescription = null, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(10.dp))
             Text(text = "Выбрать изображение", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedButton(
+            onClick = onManual,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+        ) {
+            Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(text = "Ввести вручную", fontSize = 16.sp, fontWeight = FontWeight.Medium)
         }
 
         Spacer(Modifier.height(8.dp))

@@ -199,7 +199,7 @@ fun NumberPad(
 
 /** Легенда под сеткой. */
 @Composable
-fun GridLegend(modifier: Modifier = Modifier) {
+fun GridLegend(modifier: Modifier = Modifier, showSolutionHint: Boolean = true) {
     val colors = MaterialTheme.colorScheme
     Row(
         modifier = modifier,
@@ -208,11 +208,13 @@ fun GridLegend(modifier: Modifier = Modifier) {
     ) {
         LegendItem(color = GridColors.LowConfidence, text = "проверьте")
         LegendItem(color = GridColors.Conflict, text = "конфликт")
-        Text(
-            text = "синий — решение",
-            color = colors.onSurfaceVariant,
-            fontSize = 13.sp,
-        )
+        if (showSolutionHint) {
+            Text(
+                text = "синий — решение",
+                color = colors.onSurfaceVariant,
+                fontSize = 13.sp,
+            )
+        }
     }
 }
 

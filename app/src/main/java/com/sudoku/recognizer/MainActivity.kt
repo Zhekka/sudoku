@@ -82,6 +82,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 Screen.Home -> HomeScreen(
                     onCamera = ::openCamera,
                     onFile = { pickLauncher.launch("image/*") },
+                    onManual = vm::openManual,
                     onHistory = vm::openHistory,
                     historyCount = vm.history.size,
                     notice = if (cameraDenied) {

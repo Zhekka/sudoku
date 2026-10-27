@@ -37,9 +37,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sudoku.recognizer.AppViewModel
+import com.sudoku.recognizer.InputMode
 
 /**
- * Предпросмотр распознанного судоку: числа можно править перед решением.
+ * Предпросмотр распознанного (или введённого вручную) судоку:
+ * числа можно править перед решением.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,13 +49,14 @@ fun PreviewScreen(vm: AppViewModel) {
     val colors = MaterialTheme.colorScheme
     val values = vm.grid
     val givenCount = values.count { it != 0 }
+    val manual = vm.inputMode == InputMode.MANUAL
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Проверьте числа") },
+                title = { Text(if (manual) "Ручной ввод" else "Проверьте числа") },
                 navigationIcon = {
-                    IconButton(onClick = vm::back) {
+                    IconButton(onClick = if (manual) vm::goHome else vm::back) {
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Назад")
                     }
                 },
@@ -68,7 +71,11 @@ fun PreviewScreen(vm: AppViewModel) {
                 .navigationBarsPadding(),
         ) {
             Text(
-                text = "Распознано чисел: $givenCount. Нажмите клетку и поправьте цифру, если она определена неверно.",
+                text = if (manual) {
+                    "Заполните сетку: нажмите клетку и введите цифру 1–9. Введено чисел: $givenCount."
+                } else {
+                    "Распознано чисел: $givenCount. Нажмите клетку и поправьте цифру, если она определена неверно."
+                },
                 color = colors.onSurfaceVariant,
                 fontSize = 13.sp,
                 lineHeight = 18.sp,
@@ -115,7 +122,7 @@ fun PreviewScreen(vm: AppViewModel) {
             }
 
             Spacer(Modifier.height(10.dp))
-            GridLegend()
+            GridLegend(showSolutionHint = false)
             Spacer(Modifier.height(10.dp))
 
             NumberPad(
@@ -130,12 +137,21 @@ fun PreviewScreen(vm: AppViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedButton(
-                    onClick = vm::back,
-                    modifier = Modifier.height(52.dp),
-                ) {
-                    Icon(Icons.Outlined.Crop, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text(text = "  Кадр", fontSize = 15.sp)
+                if (manual) {
+                    OutlinedButton(
+                        onClick = vm::clearGrid,
+                        modifier = Modifier.height(52.dp),
+                    ) {
+                        Text(text = "Очистить", fontSize = 15.sp)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = vm::back,
+                        modifier = Modifier.height(52.dp),
+                    ) {
+                        Icon(Icons.Outlined.Crop, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text(text = "  Кадр", fontSize = 15.sp)
+                    }
                 }
                 Button(
                     onClick = vm::solve,

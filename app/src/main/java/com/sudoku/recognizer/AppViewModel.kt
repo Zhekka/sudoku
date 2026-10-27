@@ -22,6 +22,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Откуда взяты числа в сетке: фото (камера/галерея) или ручной ввод. */
+enum class InputMode { PHOTO, MANUAL }
+
 sealed class Screen {
     data object Home : Screen()
     data object Camera : Screen()
@@ -58,7 +61,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var hint by mutableStateOf<String?>(null)
         private set
 
-    /** Распознанные числа: 81 значение, 0 — пусто. */
+    var inputMode by mutableStateOf(InputMode.PHOTO)
+        private set
+
+    /** Распознанные или введённые числа: 81 значение, 0 — пусто. */
     var grid by mutableStateOf(IntArray(81))
         private set
 
@@ -110,6 +116,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         screen = Screen.History
     }
 
+    /** Пустая сетка для ручного ввода задачи. */
+    fun openManual() {
+        resetPuzzle()
+        inputMode = InputMode.MANUAL
+        sourceTag = "manual"
+        screen = Screen.Preview
+    }
+
+    /** Очистка сетки на экране ручного ввода. */
+    fun clearGrid() {
+        grid = IntArray(81)
+        lowConfidence = BooleanArray(81)
+        conflicts = emptySet()
+        selected = -1
+        dismissHint()
+    }
+
     fun openRecord(record: HistoryRecord) {
         screen = Screen.HistoryDetail(record)
     }
@@ -148,6 +171,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         hint = null
         progress = null
         savedToHistory = false
+        inputMode = InputMode.PHOTO
     }
 
     // ------------------------------------------------------------------
@@ -339,7 +363,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun solve() {
         val current = grid
         if (current.all { it == 0 }) {
-            hint = "Сначала распознайте судоку"
+            hint = if (inputMode == InputMode.MANUAL) {
+                "Сначала введите числа задачи"
+            } else {
+                "Сначала распознайте судоку"
+            }
             return
         }
         val bad = SudokuSolver.conflictsOf(current)

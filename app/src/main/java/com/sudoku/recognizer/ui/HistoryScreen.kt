@@ -132,7 +132,7 @@ private fun HistoryCard(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "Подсказок: ${record.givenCount} · ${if (record.source == "camera") "фото" else "файл"}",
+                    text = "Подсказок: ${record.givenCount} · ${sourceLabel(record.source)}",
                     color = colors.onSurfaceVariant,
                     fontSize = 13.sp,
                 )
@@ -147,6 +147,13 @@ private fun HistoryCard(
             }
         }
     }
+}
+
+private fun sourceLabel(source: String): String = when (source) {
+    "camera" -> "фото"
+    "file" -> "файл"
+    "manual" -> "ручной ввод"
+    else -> source
 }
 
 /** Мини-превью сетки: заполненные клетки — тёмные квадратики. */
