@@ -1,17 +1,14 @@
 package com.sudoku.recognizer.ui
 
-import android.graphics.Bitmap
 import android.graphics.PointF
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,11 +28,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,13 +44,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import com.sudoku.recognizer.AppViewModel
-import com.sudoku.recognizer.image.GridExtractor
 import com.sudoku.recognizer.image.Quad
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 
 /**
  * Кадрирование: сетка судоку подхватывается автоматически, углы можно
@@ -69,23 +56,6 @@ fun CropScreen(vm: AppViewModel) {
     val colors = MaterialTheme.colorScheme
     val bitmap = vm.source
     val quad = vm.quad
-
-    /** Показывать автоматически выровненное изображение вместо исходного фото. */
-    var showAligned by remember { mutableStateOf(false) }
-
-    /** Выровненный кадр: пересчитывается с задержкой, пока углы перестают двигаться. */
-    val aligned by produceState<Bitmap?>(null, bitmap, quad, showAligned) {
-        val source = bitmap ?: return@produceState
-        val corners = quad ?: return@produceState
-        if (!showAligned) {
-            value = null
-            return@produceState
-        }
-        delay(150)
-        value = withContext(Dispatchers.Default) {
-            GridExtractor.warpAligned(source, corners)
-        }
-    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -113,17 +83,6 @@ fun CropScreen(vm: AppViewModel) {
             ) { CircularProgressIndicator() }
 
             else -> {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Segment(text = "Фото", selected = !showAligned) { showAligned = false }
-                    Segment(text = "Выравнивание", selected = showAligned) { showAligned = true }
-                }
-                Spacer(Modifier.height(8.dp))
-
                 BoxWithConstraints(
                     Modifier
                         .weight(1f)
@@ -131,45 +90,13 @@ fun CropScreen(vm: AppViewModel) {
                         .padding(16.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val photo = fitSize(maxWidth, maxHeight, bitmap.width / bitmap.height.toFloat())
-                    val side = minOf(photo.first, photo.second)
-                    val boxWidth = if (showAligned) side else photo.first
-                    val boxHeight = if (showAligned) side else photo.second
+                    val display = fitSize(maxWidth, maxHeight, bitmap.width / bitmap.height.toFloat())
 
                     Box(
                         Modifier
-                            .width(boxWidth)
-                            .height(boxHeight),
+                            .width(display.first)
+                            .height(display.second),
                     ) {
-                        if (showAligned) {
-                            val preview = aligned
-                            if (preview != null) {
-                                Image(
-                                    bitmap = preview.asImageBitmap(),
-                                    contentDescription = null,
-                                    contentScale = ContentScale.FillBounds,
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                                Canvas(Modifier.fillMaxSize()) {
-                                    val cellWidth = size.width / 9f
-                                    val cellHeight = size.height / 9f
-                                    for (i in 0..9) {
-                                        val major = i % 3 == 0
-                                        val lineColor = if (major) Color(0xFF2F6BE6) else Color(0x662F6BE6)
-                                        val stroke = if (major) 2.dp.toPx() else 1.dp.toPx()
-                                        val x = i * cellWidth
-                                        val y = i * cellHeight
-                                        drawLine(lineColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = stroke)
-                                        drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = stroke)
-                                    }
-                                }
-                            } else {
-                                Box(
-                                    Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center,
-                                ) { CircularProgressIndicator() }
-                            }
-                        } else {
                         Image(
                             bitmap = bitmap.asImageBitmap(),
                             contentDescription = null,
@@ -248,8 +175,6 @@ fun CropScreen(vm: AppViewModel) {
                             }
                         }
 
-                        }
-
                         if (vm.busy) {
                             Box(
                                 Modifier.fillMaxSize().background(Color(0x66000000)),
@@ -257,18 +182,6 @@ fun CropScreen(vm: AppViewModel) {
                             ) { CircularProgressIndicator(color = Color.White) }
                         }
                     }
-                }
-
-                if (showAligned) {
-                    Text(
-                        text = "Сетка выровнена автоматически — именно так задачу увидит нейросеть",
-                        color = colors.onSurfaceVariant,
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                    )
                 }
             }
         }
@@ -316,27 +229,6 @@ private fun fitSize(maxW: Dp, maxH: Dp, ratio: Float): Pair<Dp, Dp> =
     } else {
         maxW to maxW / ratio
     }
-
-/** Один из двух сегментов переключателя вида. */
-@Composable
-private fun Segment(text: String, selected: Boolean, onClick: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) colors.primary else colors.surfaceVariant)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = text,
-            color = if (selected) colors.onPrimary else colors.onSurfaceVariant,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-        )
-    }
-}
 
 private fun nearestCorner(position: Offset, quad: Quad, sx: Float, sy: Float): Int {
     val points = listOf(quad.tl, quad.tr, quad.br, quad.bl)
