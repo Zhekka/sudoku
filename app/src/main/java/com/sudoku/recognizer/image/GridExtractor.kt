@@ -587,6 +587,73 @@ object GridExtractor {
         return ExtractionResult(cells, ink)
     }
 
+    /** Сторона выровненного изображения — 450, как в find_and_warp_sudoku из ноутбука. */
+    const val ALIGNED_SIZE = 450
+
+    /**
+     * Автоматическое выравнивание: область quad разворачивается в квадрат
+     * size×size перспективным преобразованием (аналог cv2.warpPerspective).
+     * То, что приложение подаёт нейросети — только в цвете и целиком.
+     */
+    fun warpAligned(bitmap: Bitmap, quad: Quad, size: Int = ALIGNED_SIZE): Bitmap {
+        val w = bitmap.width
+        val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        val side = size.toDouble()
+        val dstX = doubleArrayOf(0.0, side, side, 0.0)
+        val dstY = doubleArrayOf(0.0, 0.0, side, side)
+        val q = quad.points()
+        val sx = doubleArrayOf(q[0].x.toDouble(), q[1].x.toDouble(), q[2].x.toDouble(), q[3].x.toDouble())
+        val sy = doubleArrayOf(q[0].y.toDouble(), q[1].y.toDouble(), q[2].y.toDouble(), q[3].y.toDouble())
+
+        val homography = solveHomography(dstX, dstY, sx, sy) ?: return bitmap
+
+        val out = IntArray(size * size)
+        for (v in 0 until size) {
+            val dv = v.toDouble()
+            for (u in 0 until size) {
+                val du = u.toDouble()
+                val den = homography[6] * du + homography[7] * dv + 1.0
+                if (den == 0.0) {
+                    out[v * size + u] = Color.BLACK
+                    continue
+                }
+                val x = (homography[0] * du + homography[1] * dv + homography[2]) / den
+                val y = (homography[3] * du + homography[4] * dv + homography[5]) / den
+                out[v * size + u] = sampleColor(pixels, w, h, x, y)
+            }
+        }
+        return Bitmap.createBitmap(out, size, size, Bitmap.Config.ARGB_8888)
+    }
+
+    /** Билинейная выборка цвета (аналог INTER_LINEAR в warpPerspective). */
+    private fun sampleColor(pixels: IntArray, w: Int, h: Int, x: Double, y: Double): Int {
+        val cx = x.coerceIn(0.0, (w - 1).toDouble())
+        val cy = y.coerceIn(0.0, (h - 1).toDouble())
+        val x0 = cx.toInt()
+        val y0 = cy.toInt()
+        val x1 = min(x0 + 1, w - 1)
+        val y1 = min(y0 + 1, h - 1)
+        val fx = (cx - x0).toFloat()
+        val fy = (cy - y0).toFloat()
+
+        val c00 = pixels[y0 * w + x0]
+        val c01 = pixels[y0 * w + x1]
+        val c10 = pixels[y1 * w + x0]
+        val c11 = pixels[y1 * w + x1]
+        val w00 = (1 - fx) * (1 - fy)
+        val w01 = fx * (1 - fy)
+        val w10 = (1 - fx) * fy
+        val w11 = fx * fy
+
+        val red = (Color.red(c00) * w00 + Color.red(c01) * w01 + Color.red(c10) * w10 + Color.red(c11) * w11).roundToInt()
+        val green = (Color.green(c00) * w00 + Color.green(c01) * w01 + Color.green(c10) * w10 + Color.green(c11) * w11).roundToInt()
+        val blue = (Color.blue(c00) * w00 + Color.blue(c01) * w01 + Color.blue(c10) * w10 + Color.blue(c11) * w11).roundToInt()
+        return Color.rgb(red.coerceIn(0, 255), green.coerceIn(0, 255), blue.coerceIn(0, 255))
+    }
+
     /**
      * Аналог block_is_null из ноутбука: порог 11% «чернил» в центральной области
      * при смещениях 6/8/10; клетка считается непустой, если таких совпало >= 1.

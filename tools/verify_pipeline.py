@@ -281,6 +281,33 @@ def detect_quad(gray: np.ndarray):
     return best_quad
 
 
+def warp_gray(gray, quad, size=450):
+    """Выравнивание: та же гомография, что в GridExtractor.warpAligned (450×450)."""
+    dst = np.array([[0, 0], [size, 0], [size, size], [0, size]], dtype=np.float64)
+    h = solve_homography(dst, quad)
+    hh, ww = gray.shape
+    v, u = np.mgrid[0:size, 0:size].astype(np.float64)
+    den = h[6] * u + h[7] * v + 1.0
+    x = np.clip((h[0] * u + h[1] * v + h[2]) / den, 0, ww - 1)
+    y = np.clip((h[3] * u + h[4] * v + h[5]) / den, 0, hh - 1)
+    return gray[np.round(y).astype(int), np.round(x).astype(int)]
+
+
+def alignment_error(warped, size=450, window=10):
+    """Насколько линии судоку после выравнивания попадают в свои клетки (px)."""
+    row_profile = warped.mean(axis=1)
+    col_profile = warped.mean(axis=0)
+    cell = size / 9.0
+    errors = []
+    for k in range(10):
+        expected = k * cell
+        lo = max(0, int(expected) - window)
+        hi = min(size, int(expected) + window + 1)
+        errors.append(abs((lo + int(np.argmin(row_profile[lo:hi]))) - expected))
+        errors.append(abs((lo + int(np.argmin(col_profile[lo:hi]))) - expected))
+    return max(errors)
+
+
 def solve_homography(dst, src):
     """dst -> src, 8 неизвестных."""
     a, b = [], []
@@ -362,6 +389,13 @@ def main() -> int:
     if error > 12:
         print("ПЛОХАЯ ДЕТЕКЦИЯ СЕТКИ", file=sys.stderr)
         return 2
+
+    aligned = warp_gray(blurred, quad)
+    line_error = alignment_error(aligned)
+    print(f"макс. отклонение линий сетки после выравнивания: {line_error:.1f} px (из 450)")
+    if line_error > 6:
+        print("ПЛОХОЕ ВЫРАВНИВАНИЕ", file=sys.stderr)
+        return 4
 
     cells, ink, _ = warp_and_extract(blurred, quad)
 
